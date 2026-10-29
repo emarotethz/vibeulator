@@ -11,12 +11,13 @@ import torch
 
 from vibeulator.model import GPT, Config
 from vibeulator.pack import read, write
-from vibeulator.vocab import EOS, MAX_ANS, MAX_EXPR, decode, encode
+from vibeulator.vocab import EOS, MAX_ANS, decode, encode
 
 PROBES = ['7+5', '48+37', '512+389', '604183+275946', '83-46', '7*8', '47*23', '318*642',
           '1302/42', '1/7', '2^10', 'r2', 's(30)', 'c(45)', '12+3*4', '(3+4)*5', '1/0',
           'r(-4)', '-5+2', '0.1+0.2', '2^-3', '9^99', 'r(9+(3-1)*8)/2', '((((((1))))))',
-          '1+', '++', '123456789012345678901234567890']
+          '1+', '++', '2+*3', '()', '1..2', '(1))', '*5', '123456789012345678901234567890',
+          't(45)', 'Rs(p/6)', 'l(1000)', 'n(e)', 'e^2', '2*p']
 
 
 def main():
@@ -32,7 +33,9 @@ def main():
     model.load_state_dict(ck['state'])
     meta = {'params': model.params(), 'steps': ck['step'], 'batch': args['batch'],
             'examples': args['n'], 'seen': ck['step'] * args['batch'],
-            'max_expr': MAX_EXPR, 'max_ans': MAX_ANS}
+            'max_expr': cfg['block'] - MAX_ANS - 2, 'max_ans': MAX_ANS,
+            # whether the model writes its answers backwards, for whatever reads them to flip back
+            'reversed': bool(args.get('reverse'))}
     write(a.out, cfg, {k: v for k, v in ck['state'].items()}, meta)
     print(f'wrote {a.out}: {model.params():,} parameters')
 

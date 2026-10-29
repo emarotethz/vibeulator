@@ -28,6 +28,7 @@ for (const [expr, want] of cases) {
 }
 console.log(`calc: ${cases.length} cases, ${failures} mismatches`);
 
+
 // ---- engine ---------------------------------------------------------------------
 const binPath = process.argv[2] || here('../weights/vibeulator.bin');
 const fixPath = process.argv[3] || here('model-fixture.json');

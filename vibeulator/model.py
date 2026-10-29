@@ -76,11 +76,19 @@ class GPT(nn.Module):
 
 @torch.no_grad()
 def greedy(model, prompts, max_new=None):
-    """Greedy answers for a list of encoded prompts (each ending in '=').
+    """Greedy answers for a list of encoded prompts (each ending in '=')."""
+    return answers(model, prompts, 0.0, max_new=max_new)
+
+
+@torch.no_grad()
+def answers(model, prompts, temp=0.0, seed=0, max_new=None):
+    """Answers for a list of encoded prompts (each ending in '='): greedy at temp
+    0, otherwise each token sampled at that temperature, the way the page asks.
     Prompts are grouped by length so no padding ever shifts a position."""
     from .vocab import EOS, MAX_ANS, decode
     max_new = max_new or MAX_ANS + 1
     dev = next(model.parameters()).device
+    gen = torch.Generator(device=dev).manual_seed(seed)
     out = [None] * len(prompts)
     by_len = {}
     for i, p in enumerate(prompts):
@@ -93,7 +101,11 @@ def greedy(model, prompts, max_new=None):
             for _ in range(max_new):
                 if x.shape[1] > model.c.block:
                     break
-                nxt = model(x)[:, -1].argmax(-1)
+                logits = model(x)[:, -1].float()
+                if temp:
+                    nxt = torch.multinomial(torch.softmax(logits / temp, -1), 1, generator=gen)[:, 0]
+                else:
+                    nxt = logits.argmax(-1)
                 nxt = torch.where(done, torch.full_like(nxt, EOS), nxt)
                 x = torch.cat([x, nxt[:, None]], 1)
                 done |= nxt == EOS

@@ -1,11 +1,13 @@
 """Train the vibeulator.
 
-    python train.py                          # the shipped configuration
+    python train.py                          # the shipped model, on a GPU
+    python train.py --device cpu --batch 256 # the same model on a CPU (see the README for how long)
     python train.py --steps 50 --n 20000 --d 64 --layers 2 --heads 2 --ff 256 \
         --device cpu --out /tmp/smoke.pt     # a smoke test
 
 Only the answer is scored: the loss covers the tokens after '=' and the
-closing <eos>, never the expression itself.
+closing <eos>, never the expression itself. The answer is written backwards,
+least significant digit first, unless --forward.
 """
 import argparse
 import math
@@ -24,9 +26,9 @@ from vibeulator.vocab import PAD, encode
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--n', type=int, default=12_000_000, help='training examples to generate')
+    ap.add_argument('--n', type=int, default=30_000_000, help='training examples to generate')
     ap.add_argument('--seed', type=int, default=0)
-    ap.add_argument('--steps', type=int, default=60_000)
+    ap.add_argument('--steps', type=int, default=100_000)
     ap.add_argument('--batch', type=int, default=1024)
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--warmup', type=int, default=1000)
@@ -37,16 +39,22 @@ def main():
     ap.add_argument('--ff', type=int, default=Config.ff)
     ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     ap.add_argument('--workers', type=int, default=None, help='processes for data generation')
+    ap.add_argument('--threads', type=int, default=None, help='CPU threads (default: one per physical core)')
+    ap.add_argument('--fp32', action='store_true', help='skip bf16 autocast, for CPUs without native bf16')
     ap.add_argument('--compile', action='store_true')
+    ap.add_argument('--forward', action='store_true', help='write answers the usual way round, not backwards')
     ap.add_argument('--log', type=int, default=200)
     ap.add_argument('--eval', type=int, default=5000, help='steps between held-out checks')
     ap.add_argument('--out', default='checkpoints/vibeulator.pt')
     ap.add_argument('--cache', default='data', help='where generated datasets are kept')
     a = ap.parse_args()
+    a.reverse = not a.forward        # what export.py records, so the page knows to flip answers back
 
     torch.manual_seed(a.seed)
+    if a.threads:
+        torch.set_num_threads(a.threads)
     t0 = time.time()
-    rows, eq = build(a.n, a.seed, a.workers, a.cache)
+    rows, eq = build(a.n, a.seed, a.workers, a.cache, a.reverse)
     print(f'data: {len(rows):,} rows in {time.time() - t0:.0f}s')
 
     dev = torch.device(a.device)
@@ -76,7 +84,8 @@ def main():
     held_prompts = [encode(e) for e, _ in held]
 
     pos = torch.arange(cfg.block, device=dev)
-    amp = torch.autocast('cuda', dtype=torch.bfloat16) if dev.type == 'cuda' else torch.autocast('cpu', enabled=False)
+    # bf16 matmuls on both: on a CPU with native bf16 (Zen 4/5, Sapphire Rapids) it halves the step time
+    amp = torch.autocast(dev.type, dtype=torch.bfloat16, enabled=not a.fp32)
     gen = torch.Generator(device=rows.device).manual_seed(a.seed)
     seen, t0, run = 0, time.time(), None
     for step in range(a.steps):
@@ -104,7 +113,7 @@ def main():
             model.eval()
             got = greedy(model, held_prompts)
             model.train()
-            acc = sum(g == t for g, (_, t) in zip(got, held)) / len(held)
+            acc = sum(g == (t[::-1] if a.reverse else t) for g, (_, t) in zip(got, held)) / len(held)
             print(f'  held-out exact match {acc:.3f}', flush=True)
             save(model, cfg, a, step + 1)
 

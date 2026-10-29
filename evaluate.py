@@ -1,12 +1,18 @@
 """Score the shipped weights and write weights/eval.json, which the page draws
 as its "error by operations" table and "error by length" chart.
 
-    python evaluate.py [--bin weights/vibeulator.bin] [--n 1000] [--per-length 120] [--temp 1]
+    python evaluate.py [--bin weights/vibeulator.bin] [--n 10000] [--per-length 10000] [--temp 1]
 
 It loads the int8 file, not the checkpoint, so the numbers belong to the
 model the browser runs, and it samples every token at temperature 1 the way
-the page does (--temp 0 for greedy). "close" means within 1% of the right
-answer, or the right Error.
+the page does (--temp 0 for greedy). "close" means within 1%, or the right
+Error.
+
+Errors are a share of the bigger of the two numbers, |said - right| / max(|said|,
+|right|), so being too big and being too small count the same: 10 times off
+either way is 90%, and 0, the wrong sign or something wildly too big are all
+100%. Measured against the right answer alone, 0 for 100 would be 100% off
+while 1e11 was 1e11% off, though both are as wrong as it gets.
 
 It also scores random expressions at every length, the same number at each,
 for the page's error-by-length chart: every kind of operation equally likely,
@@ -69,26 +75,26 @@ SUITE = [
 def close(pred, truth):
     if truth in (ERR, SYN) or pred in (ERR, SYN):
         return pred == truth
-    try:
-        p, t = float(pred), float(truth)
-    except ValueError:
-        return False
-    return p == t if t == 0 else abs(p - t) <= 0.01 * abs(t)
+    off = off_by(pred, truth)
+    return off is not None and off <= 1
 
 
 NUMBER = re.compile(r'^-?\d+(\.\d+)?(e-?\d+)?$')
 
 
 def off_by(pred, truth):
-    """How far off an answer is, in percent, the way the page's verdict reads it:
-    0 when exact, None when it isn't a number that can be compared."""
+    """How far off an answer is, in percent of the bigger of the two, the way the
+    page's verdict reads it: 0 when exact, 100 at most, None when it isn't a
+    number that can be compared."""
     if pred == truth:
         return 0.0
     if truth in (ERR, SYN) or pred in (ERR, SYN) or not NUMBER.match(pred):
         return None
     p, t = float(pred), float(truth)
-    off = abs(p) * 100 if t == 0 else abs(p - t) / abs(t) * 100
-    return off if math.isfinite(off) else None
+    if not (math.isfinite(p) and math.isfinite(t)):
+        return None
+    # a wrong sign comes out above 100%: it is as wrong as 0
+    return 0.0 if p == t else min(100.0, abs(p - t) / max(abs(p), abs(t)) * 100)
 
 
 def any_op(rng):
@@ -135,9 +141,9 @@ def by_length(model, per, temp, most, rev, seed='eval-length'):
         typical = at(0.5) if not math.isinf(at(0.5)[0]) else numbers[len(numbers) // 2]
         rows.append({'tokens': n, 'n': len(here), 'exact': share(-1, 0),
                      'median': tidy(at(0.5)[0]), 'p90': tidy(at(0.9)[0]),
-                     # exact, within 1%, 1 to 10%, 10 to 100%, worse, and not a number at all
-                     # (Error, Syntax error or garbage), which has no % to give
-                     'split': [share(-1, 0), share(0, 1), share(1, 10), share(10, 100), share(100, 1e308),
+                     # exact, within 1%, 1 to 10%, 10 to 90%, more than 10 times off (90 to 100%),
+                     # and not a number at all (Error, Syntax error or garbage), which has no % to give
+                     'split': [share(-1, 0), share(0, 1), share(1, 10), share(10, 90), share(90, 100),
                                round(sum(math.isinf(h[0]) for h in here) / len(here), 4)],
                      'typical': example(typical), 'worst': example(numbers[-1])})
         print(f'{n:2d} tokens   exact {rows[-1]["exact"]:6.1%}   median off {at(0.5)[0]:9.3g}%   '
@@ -158,8 +164,8 @@ def cases(make, n, seed, most=MAX_EXPR):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bin', default='weights/vibeulator.bin')
-    ap.add_argument('--n', type=int, default=1000)
-    ap.add_argument('--per-length', type=int, default=120, help='sums at each expression length')
+    ap.add_argument('--n', type=int, default=10000)
+    ap.add_argument('--per-length', type=int, default=10000, help='sums at each expression length')
     ap.add_argument('--temp', type=float, default=1.0, help='sampling temperature, 0 for greedy')
     ap.add_argument('--out', default='weights/eval.json')
     ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
